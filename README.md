@@ -1,177 +1,98 @@
-# Bootloader unlock for Kyocera DIGNO Keitai 4 (KY-42C)
+# KY42C Wiper
 
-This is a bootloader unlock "exploit" for the Kyocera KY-42C, working on newer firmware versions (tested on 112.0.0153).
-Furthermore, it unlocks fastboot (bootloader) cmds that were previously locked out by a "Forbidden" message.
+KY-42C (MT6761) の Preloader の穴 (`CMD_SEND_IMAGE` / `CMD_BOOT_IMAGE`) を使って、Bootloaderはそのままに中身だけ工場出荷状態に戻すやつです。
 
-On newer firmware versions, the Preloader has been patched against the crash to BROM method, and bootrom usbdl has been
-disabled via the BROM SECCFG GFH. This means that BROM USBDL is not available, and no DA is available for this device.
+元ネタは [shomykohai/kyocera-ky-42c-unlock](https://github.com/shomykohai/kyocera-ky-42c-unlock) 。あちらは Bootloader Unlock が目的ですが、こっちは `seccfg` に触らず `userdata` 周りだけを消す派生です。
 
-> [!WARNING] 
-> This is for educational purposes only. I am not responsible for any damage caused by using this code.
-> Use at your own risk.
+> [!WARNING]
+> 壊れても自己責任で。`userdata` は完全に消えます。元に戻せません。
 
-*If you only care about unlocking the bootloader, jump to the [Usage](#usage) section.*
+確認できたのは 112.0.0153 あたり。新しめのファームでも Preloader が `0E8D:2000` で出てくればだいたい行けます。
 
-## How does it work?
+## unlock と何が違うの
 
-On older preloaders, MediaTek devices had a compile flag called `CFG_PRELOADER_AS_DA`, which enabled two cmds in the Preloader: `CMD_SEND_IMAGE` (0x70) and `CMD_BOOT_IMAGE` (0x71).
+- `seccfg` / `chkcode` を書き換えない → Bootloader は Locked のまま。Orange State も出ない
+- `userdata` / `cache` / `metadata` / `frp` をゼロ埋め → 再起動後に Android 側が「壊れてる」と判断して勝手にフォーマットして初期設定に戻る
 
-These cmds don't perform any sort of verification whatsoever, allowing anyone to run arbitrary code on the device.
+やってることは unlock と同じで、Preloader に `lk` という名前で payload を送り込んで EL3 で動かして eMMC を直接叩いてます。
 
-```c
-static void usbdl_send_image(void) {
-	u32 img_addr = 0;
-	u32 img_len = 0;
-	image_index_t id;
-	u16 status = 0;
-	u8 img_name[64] = {0};
-	u32 checksum32 = 0;
-	u32 my_checksum32 = 0;
+## 使い方
 
-	usbdl_get_data(img_name, 64);
-	usbdl_get_dword(&img_len);
-
-  /* 
-   *  For loop checking for a valid image name, we just pass "lk"
-   * and the check will pass
-   * ...
-   */
-
-	usbdl_put_word(status);
-
-	// receive Image data
-	usbdl_get_data((u8 *)img_addr, img_len);
-
-	my_checksum32 = checksum_plain((u8 *)img_addr, img_len);
-	usbdl_get_dword(&checksum32);
-
-	if (my_checksum32 != checksum32) {
-		pal_log_err("%s checksum mismatch!\n", MOD);
-		return;
-	}
-
-  if(id == IMAGE_ATF_ID) {
-      // Relocate ATF and TEE
-  }
-}
-```
-
-```c
-static void usbdl_boot_image(void) {
-	extern void bldr_jump(u32 addr, u32 arg1, u32 arg2);
-
-	u8 img_name[64] = {0};
-	u32 jump_arg;
-	u16 status = 0;
-
-	usbdl_get_data(img_name, 64);
-
-	trustzone_pre_init();
-
-	g_boot_mode = FASTBOOT;
-	platform_set_boot_args();
-
-	trustzone_post_init();
-
-	jump_arg = (u32)&bootarg;
-
-	if (!strcmp(img_name, lk)) {
-		usbdl_put_word(status);
-		pal_log_err("%s Jump to LK\n", MOD);
-		bldr_jump(g_image_list[IMAGE_LK_ID].start_addr + PART_HDR_BUF_SIZE, jump_arg, sizeof(boot_arg_t));
-	} else if (!strcmp(img_name, atf)) {
-		usbdl_put_word(status);
-		pal_log_err("%s Jump to ATF\n", MOD);
-		bldr_jump64(g_image_list[IMAGE_LK_ID].start_addr + PART_HDR_BUF_SIZE, jump_arg, sizeof(boot_arg_t));
-	} else {
-		status = 1;
-		usbdl_put_word(status);
-		pal_log_err("%s Unknown Jump\n", MOD);
-	}
-}
-```
-
-This means, by crafting a payload with the correct layout (in this case, just prepending a 512 bytes empty header), we can get `EL3` code execution on the device.
-
-This method has been already used in the past to unlock other devices, such as the [LG K10](https://github.com/arturkow2000/lgk10exploit) in Preloader mode.
-
-# Usage
-
-You'll need to install `python3` and the required dependencies.
-Creating a venv is recommended.
-
-## Linux
+Python 3 があればOK。venv推奨。
 
 ```bash
-$ python3 -m venv venv
-$ source venv/bin/activate
-$ pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Make sure you are in the `dialout` 
+権限エラーが出るなら一度だけ:
 
 ```bash
-$ sudo usermod -aG dialout $USER
+sudo usermod -aG dialout $USER
+# 一回ログアウト/ログインし直す
 ```
 
-## Windows
-
-```powershell
-> python -m venv venv
-> .\venv\Scripts\activate
-> pip install -r requirements.txt
-```
-
-You might also need to install MediaTek USB VCOM drivers.
-
----
-
-Then, run the script:
+あとは:
 
 ```bash
-$ python main.py unlock
+# 1. KY-42C の電源を長押しで完全に切る (10秒くらい)
+# 2. 下のコマンドを打って Waiting にしておいてから USB を挿す
+#    1〜2秒だけ 0E8D:2000 として認識される
+
+sudo ./venv/bin/python main.py wipe
 ```
 
-Power off the device, and plug it in to connect into Preloader mode (port 0E8D:2000).
+こんな感じになれば成功:
 
-The device will automatically reboot and you should see a "Orange state" warning on the screen.
+```
+INFO: Using payload from bin/wipe.bin
+INFO: Waiting for MediaTek Preloader device (0E8D:2000)...
+INFO: Found device 0E8D:2000 at /dev/ttyACM0
+INFO: MediaTek Preloader handshake completed!
+INFO: Jumped to lk.
+```
 
-This **will not** automatically wipe your data, but it is recommended to perform a factory reset right after.
-If you get a permission denied error, make sure to configure udev rules for the device, or run the script as root.
+30〜60秒くらいで自動リセットがかかって再起動、初期設定画面が出れば終わり。
 
-## Backup firmware
+- `/dev/ttyACM0: Permission denied` → `sudo` で実行するか `dialout` に入り直す
+- 起動ループ / 暗号化エラーになる → fast wipe だと足りてないので `payload/src/wipe.c` でフルワイプに切り替えてビルドし直す (時間かかるので普段は fast で十分)
 
-To perform a full backup, you'll need to install [penumbra](https://github.com/shomykohai/penumbra).
-Once installed, you can run the following commands:
+ついでに本家のコマンドもそのまま残してます:
 
 ```bash
-$ mkdir backup
-$ python main.py patch
-$ antumbra rl backup --skip userdata --da MTK_DA_V5.bin
+python main.py unlock  # Bootloader unlock (seccfg書き換え)
+python main.py patch   # Preloaderパッチ (未署名DA用)
 ```
 
-You can get `MTK_DA_V5.bin` from [mtkclient repo](https://github.com/bkerler/mtkclient/raw/refs/heads/main/mtkclient/Loader/MTK_DA_V5.bin).
+## 中身
 
-> [!NOTE]
-> mtkclient is currently not compatible with this method, because of how it handles connecting on an already handshaked device.
-> Any issue related to penumbra, should be reported to the [penumbra repo](https://github.com/shomykohai/penumbra).
+昔の Preloader は `CFG_PRELOADER_AS_DA` が有効で `CMD_SEND_IMAGE (0x70)` と `CMD_BOOT_IMAGE (0x71)` が検証なしで叩けます。KY-42C はそれが残ってたので、512B のヘッダを付けた payload を `lk` として送るとそのまま実行できる。Wiper はそこで GPT を読んで該当パーティションだけ `mmc_write_blocks` で 0 埋めして WDT リセットで再起動、というだけです。
 
+詳しい話は本家と [shomyさんのブログ](https://itssho.my/blog/article/unlocking-kyocera-ky42c) が詳しいです。
 
-# Building
-
-For building the payload, you'll need to install `arm-none-eabi-` toolchain and `make`.
-If needed, export the `CROSS_COMPILE` variable to point to the toolchain.
+## ビルド
 
 ```bash
-$ export CROSS_COMPILE=arm-none-eabi-
-$ ./build.sh
+sudo apt install gcc-arm-none-eabi
+./build.sh
+# bin/wipe.bin / bin/unlock.bin / bin/patch.bin ができる
 ```
 
-# License
+## 謝辞・ライセンス
 
-This project is licensed under `AGPL-3.0-or-later`. See [LICENSE](LICENSE) for details.
+- ベース: [shomykohai/kyocera-ky-42c-unlock](https://github.com/shomykohai/kyocera-ky-42c-unlock) (Shomy, AGPL-3.0-or-later)
+- `payload/src/gpt.c` は [@R0rt1z2](https://github.com/R0rt1z2) (GPL-3.0-or-later)
+- `mtk-payloads` は [@shomykohai](https://github.com/shomykohai/mtk-payloads) (MIT)
+- `moto-experiments` は [@R0rt1z2](https://github.com/R0rt1z2/moto-experiments) (MIT)
 
-This project also includes third party code:
-* [gpt](payload/src/gpt.c) by [@R0rt1z2], licensed under the `GPL-3.0-or-later` license.
-* [mtk-payloads](https://github.com/shomykohai/mtk-payloads) by [@shomykohai]. The code used is licensed under the `MIT` license.
-* [moto-experiments](https://github.com/R0rt1z2/moto-experiments) by [@R0rt1z2], licensed under the `MIT` license.
+このリポジトリ全体は `AGPL-3.0-or-later` です ([LICENSE](LICENSE))。
+
+追加した部分 (`payload/src/wipe.c` と `main.py` の wipe 周り) は
+
+```
+SPDX-License-Identifier: AGPL-3.0-or-later
+SPDX-FileCopyrightText: Copyright © 2014–2026 Laurier Sylph.
+```
+
+で同じライセンスで配布してます。

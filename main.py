@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# SPDX-FileCopyrightText: 2026 Shomy
+# SPDX-FileCopyrightText: Copyright © 2014–2026 Laurier Sylph.
+# Based on kyocera-ky-42c-unlock by Shomy (AGPL-3.0-or-later)
 #
 
 import argparse
@@ -31,6 +32,14 @@ def main():
         'patch', help='Patch preloader to allow loading an unsigned DA'
     )
 
+    wipe_p = subparsers.add_parser(
+        'wipe', help='Wipe userdata/cache without unlocking bootloader'
+    )
+    wipe_p.add_argument(
+        '--full', action='store_true',
+        help='Full wipe userdata (slow, many GB). Default is fast wipe (16MB+footer).'
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -38,7 +47,8 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
     )
 
-    path = 'bin/unlock.bin' if args.command == 'unlock' else 'bin/patch.bin'
+    bin_map = {'unlock': 'bin/unlock.bin', 'patch': 'bin/patch.bin', 'wipe': 'bin/wipe.bin'}
+    path = bin_map[args.command]
     with open(path, 'rb') as f:
         data = f.read()
         logging.info(f'Using payload from {path}')
